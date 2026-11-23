@@ -72,11 +72,12 @@ for (const button of document.querySelectorAll('[data-camera]')) {
   });
 }
 
-// chase eases in behind the drone, free keeps your orbit and just moves it along with the drone
+// chase eases in behind the drone but always looks straight at it (easing the look point too
+// makes the view swim on hard turns). Free keeps your orbit and just moves it along with the drone
 function moveCamera(previous, current, dt) {
   if (cameraMode === 'chase') {
     camera.position.lerp(chaseTarget(current), 1 - Math.exp(-dt * 3));
-    controls.target.lerp(current, 1 - Math.exp(-dt * 6));
+    controls.target.copy(current);
   } else {
     moved.subVectors(current, previous);
     camera.position.add(moved);
@@ -106,7 +107,7 @@ controls.update();
 // negative first step
 const previous = new THREE.Vector3();
 let lastTime = null;
-renderer.setAnimationLoop((time) => {
+function frame(time) {
   const dt = lastTime === null ? 0 : Math.min((time - lastTime) / 1000, MAX_DT);
   lastTime = time;
   previous.copy(drone.root.position);
@@ -114,4 +115,12 @@ renderer.setAnimationLoop((time) => {
   drone.spinProps(dt);
   moveCamera(previous, drone.root.position, dt);
   renderer.render(scene, camera);
+}
+// three.js stops calling the loop for good if it throws once, so log and keep going
+renderer.setAnimationLoop((time) => {
+  try {
+    frame(time);
+  } catch (e) {
+    console.error(e);
+  }
 });
