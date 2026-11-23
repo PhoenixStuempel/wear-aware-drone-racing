@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wear-aware drone racing</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { height: 100%; margin: 0; background: #e4e6e9; }
+  body { font: 600 14px "Segoe UI", system-ui, sans-serif; color: #26282c; }
+  #stage { height: 100%; overflow: hidden; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #stage p { margin: 0; padding: 24px; }
+  .controls { position: fixed; top: 14px; left: 14px; display: flex; gap: 6px; align-items: center; }
+  .controls button { padding: 10px 14px; border: 0; background: #26282c; color: #fff; font: inherit; cursor: pointer; }
+  .controls button[aria-pressed="false"] { background: #5d6168; }
+  .controls button:hover { background: #3a3d42; }
+  .controls button:focus-visible { outline: 2px solid #2fd07a; outline-offset: 2px; }
+  .note { margin-left: 10px; font-weight: 500; color: #5d6168; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<main id="stage" aria-label="A quadcopter flying a loop of gates inside a 10 metre box. Drag to orbit, scroll to zoom.">
+  <p>The viewer didn't start. Run <code>python viewer/serve.py</code> and open the address it prints (it won't work opened straight from the file).</p>
+</main>
+<div class="controls" role="group" aria-label="Camera">
+  <button type="button" data-camera="chase" aria-pressed="true">Chase camera</button>
+  <button type="button" data-camera="free" aria-pressed="false">Free camera</button>
+  <span class="note">Scripted flight, not a trained agent</span>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
