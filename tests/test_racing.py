@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from racing.course import AHEAD, MIN_GATE_GAP, PADDING, check_gate, first_gates, in_box, random_gate
+from racing.env import END_NAMES, EPISODE_COLUMNS, RaceEnv
 
 CENTRE = torch.tensor([[0.0, 0.0, 2.0]])
 FORWARD = torch.tensor([[1.0, 0.0, 0.0]])
@@ -97,3 +98,37 @@ def test_courses_follow_the_rules():
     # really random: some gates face nearly straight up or down, some are near the walls
     assert (dirs[..., 2].abs() > 0.95).any()
     assert (pos[..., :2].abs().max(-1).values > 3.3).any()
+
+
+def test_env_basics():
+    env = RaceEnv(64, device="cpu", seed=0)
+    obs, _ = env.get_observations()
+    assert obs.shape == (64, 29) and torch.isfinite(obs).all()
+
+    # hovering (all zero actions) earns about nothing and doesn't crash for a while
+    total = torch.zeros(64)
+    for _ in range(50):
+        obs, reward, done, _ = env.step(torch.zeros(64, 4))
+        total += reward
+    assert not done.any()
+    assert total.abs().max() < 1.0
+
+    # random flailing ends episodes, and each one is logged with a known ending
+    for _ in range(300):
+        env.step(torch.randn(64, 4))
+    eps = env.pop_episodes()
+    assert len(eps) > 0 and eps.shape[1] == len(EPISODE_COLUMNS)
+    assert set(eps[:, 1].long().tolist()) <= set(range(len(END_NAMES)))
+
+
+def test_passing_a_gate_moves_the_course_on():
+    env = RaceEnv(1, device="cpu", seed=3)
+    old = env.gate_pos[0].clone()
+    through = env.gate_dir[0, 0]
+    env.drones.state[0, 0:3] = old[0] - 0.05 * through  # just in front of the next gate
+    env.drones.state[0, 3:6] = 5.0 * through  # flying straight through it
+    _, reward, done, _ = env.step(torch.zeros(1, 4))
+    assert env.gates_passed[0] == 1 and not done[0]
+    assert torch.allclose(env.gate_pos[0, :2], old[1:])  # the rest moved up, a new one at the end
+    assert (env.gate_pos[0, 2] - old).norm(dim=-1).min() >= MIN_GATE_GAP
+    assert reward[0] > 4.0  # the gate bonus
