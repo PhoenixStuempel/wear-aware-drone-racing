@@ -1,3 +1,5 @@
 # torch with CUDA: pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1
+rsl-rl-lib==2.3.3
+matplotlib
 pytest
