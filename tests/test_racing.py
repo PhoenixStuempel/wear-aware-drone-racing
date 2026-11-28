@@ -5,6 +5,7 @@ import torch
 
 from racing.course import AHEAD, MIN_GATE_GAP, PADDING, check_gate, first_gates, in_box, random_gate
 from racing.env import END_NAMES, EPISODE_COLUMNS, RaceEnv
+from racing.train import POLICY, BoundedActorCritic
 
 CENTRE = torch.tensor([[0.0, 0.0, 2.0]])
 FORWARD = torch.tensor([[1.0, 0.0, 0.0]])
@@ -132,3 +133,21 @@ def test_passing_a_gate_moves_the_course_on():
     assert torch.allclose(env.gate_pos[0, :2], old[1:])  # the rest moved up, a new one at the end
     assert (env.gate_pos[0, 2] - old).norm(dim=-1).min() >= MIN_GATE_GAP
     assert reward[0] > 4.0  # the gate bonus
+
+
+def test_bounds_loss_only_past_the_edge():
+    # the penalty rides in on the entropy term: no change while the means are inside [-1, 1],
+    # lower "entropy" (so a higher loss) once they're outside
+    torch.manual_seed(0)
+    policy = BoundedActorCritic(29, 29, 4, entropy_coef=0.005, **POLICY)
+    obs = torch.randn(64, 29)
+    policy.update_distribution(obs)
+    plain = policy.distribution.entropy().sum(-1)
+    inside = policy.distribution.mean.abs().max() <= 1
+    assert inside and torch.allclose(policy.entropy, plain)
+
+    with torch.no_grad():
+        policy.actor[-1].bias += 3.0  # push every mean to ~3
+    policy.update_distribution(obs)
+    plain = policy.distribution.entropy().sum(-1)
+    assert (policy.entropy < plain - 10).all()  # 0.01 / 0.005 * 4 motors * ~2^2 = ~32 each

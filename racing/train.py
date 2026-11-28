@@ -17,6 +17,7 @@ import argparse
 import csv
 import gzip
 import json
+import math
 import platform
 import subprocess
 import time
@@ -51,6 +52,31 @@ PPO_SETTINGS = dict(
     desired_kl=0.01,
 )
 STEPS_PER_ENV = 24  # per update, so 4096 envs -> ~98k samples per update
+BOUNDS_COEF = 0.01  # keeps the policy's mean action inside [-1, 1], see BoundedActorCritic
+
+
+class BoundedActorCritic(ActorCritic):
+    """RSL-RL's actor-critic plus a loss on the mean action leaving [-1, 1].
+
+    The env clamps actions to [-1, 1], so past the edge a mean of 1.5 and a mean of 50 fly the
+    same. Nothing pulls the means back, they drift out, and the entropy bonus widens the Gaussian
+    for free since most samples get clamped anyway. Noise went 0.2 -> 2+ and crashes 6% -> 18%
+    over a 40 min run. Fix: add BOUNDS_COEF * sum(relu(|mu| - 1)^2) to the training loss. A loss
+    on the policy's output, not a reward term, so the reward is untouched.
+
+    RSL-RL's update does `loss -= entropy_coef * entropy`, so the penalty rides in on the entropy
+    term (divided by entropy_coef) instead of copying its whole update function. Side effect:
+    the "entropy" PPO reports includes it, so train() logs entropy and the penalty separately.
+    """
+
+    def __init__(self, *args, entropy_coef, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entropy_coef = entropy_coef
+
+    @property
+    def entropy(self):
+        over = torch.relu(self.distribution.mean.abs() - 1.0).pow(2).sum(dim=-1)
+        return super().entropy - BOUNDS_COEF / self.entropy_coef * over
 
 
 def git_state():
@@ -149,6 +175,7 @@ def main():
         "policy": POLICY,
         "ppo": PPO_SETTINGS,
         "steps_per_env": STEPS_PER_ENV,
+        "bounds_coef": BOUNDS_COEF,
         "eval_seed": EVAL_SEED,
         "git": git_state(),
         "versions": {
@@ -162,7 +189,9 @@ def main():
     (run / "config.json").write_text(json.dumps(config, indent=2))
 
     obs, _ = env.get_observations()
-    policy = ActorCritic(obs.shape[1], obs.shape[1], env.num_actions, **POLICY).to(device)
+    policy = BoundedActorCritic(
+        obs.shape[1], obs.shape[1], env.num_actions, entropy_coef=PPO_SETTINGS["entropy_coef"], **POLICY
+    ).to(device)
     normalizer = EmpiricalNormalization(shape=[obs.shape[1]], until=1.0e8).to(device)
     ppo = PPO(policy, device=device, **PPO_SETTINGS)
     ppo.init_storage("rl", env.num_envs, STEPS_PER_ENV, [obs.shape[1]], [obs.shape[1]], [env.num_actions])
@@ -197,6 +226,13 @@ def main():
                 obs = normalizer(obs)
                 ppo.process_env_step(rewards, dones, extras)
             ppo.compute_returns(obs)
+            mu = ppo.storage.mu  # the policy's mean actions this rollout, before update() clears it
+            over = torch.relu(mu.abs() - 1.0)
+            drift = {
+                "mean_abs_mu": mu.abs().mean().item(),
+                "share_mu_out": (over > 0).float().mean().item(),  # means past the [-1, 1] clamp
+                "loss_bounds": BOUNDS_COEF * over.pow(2).sum(-1).mean().item(),
+            }
         t1 = time.time()
         losses = ppo.update()
         t2 = time.time()
@@ -215,7 +251,9 @@ def main():
             "action_std": policy.std.mean().item(),  # exploration noise, shrinks as it learns
             "loss_value": losses["value_function"],
             "loss_surrogate": losses["surrogate"],
-            "loss_entropy": losses["entropy"],
+            # Gaussian entropy from the std (PPO's own number has the bounds loss mixed in)
+            "entropy": (0.5 * torch.log(2 * math.pi * math.e * policy.std.detach() ** 2)).sum().item(),
+            **drift,
             **episode_stats(eps, hz=cfg.drone.control_hz),
         }
         updates_log.write(row)
