@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { buildArena } from './arena.js';
+import { BOX_SIZE, buildArena } from './arena.js';
 import { createScriptedFlight } from './course.js';
 import { buildDrone } from './drone.js';
 import { buildGate } from './gates.js';
@@ -41,7 +41,6 @@ controls.maxDistance = 45;
 
 const up = new THREE.Vector3(0, 1, 0);
 const heading = new THREE.Vector3();
-const chasePosition = new THREE.Vector3();
 const moved = new THREE.Vector3();
 
 function showFlight(state) {
@@ -53,32 +52,54 @@ function showFlight(state) {
   });
 }
 
-// 2.2 m behind (along the heading, ignoring tilt) and 0.8 m up
-function chaseTarget(position) {
+// tracking cam starts 2.2 m behind the drone (along the heading, ignoring tilt) and 0.8 m up
+function behindDrone() {
   heading.set(1, 0, 0).applyQuaternion(drone.root.quaternion);
   heading.y = 0;
   heading.normalize();
-  return chasePosition.copy(position).addScaledVector(heading, -2.2).addScaledVector(up, 0.8);
+  return new THREE.Vector3().addScaledVector(heading, -2.2).addScaledVector(up, 0.8);
 }
 
-// camera buttons
-let cameraMode = 'chase';
+// free cam starts looking at the middle of the box from a high corner, far enough back that the
+// whole box fits (its corners sit BOX_SIZE * sqrt(3) / 2 from the middle)
+const boxMiddle = new THREE.Vector3(0, BOX_SIZE / 2, 0);
+function wholeBox() {
+  const radius = (BOX_SIZE * Math.sqrt(3)) / 2;
+  const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+  const fit = Math.min(halfFov, Math.atan(Math.tan(halfFov) * camera.aspect)); // narrower side
+  return new THREE.Vector3(1, 0.75, 1.3).normalize().multiplyScalar((radius / Math.sin(fit)) * 1.05);
+}
+
+// camera buttons. Each mode remembers where you left it: tracking as an offset from the drone,
+// free as a fixed spot
+let cameraMode = 'tracking';
+let trackingOffset = null;
+let freeView = null;
 for (const button of document.querySelectorAll('[data-camera]')) {
   button.addEventListener('click', () => {
-    cameraMode = button.dataset.camera;
+    const mode = button.dataset.camera;
+    if (mode === cameraMode) return;
+    if (mode === 'free') {
+      trackingOffset = camera.position.clone().sub(controls.target);
+      freeView ??= { position: wholeBox().add(boxMiddle), target: boxMiddle.clone() };
+      camera.position.copy(freeView.position);
+      controls.target.copy(freeView.target);
+    } else {
+      freeView = { position: camera.position.clone(), target: controls.target.clone() };
+      controls.target.copy(drone.root.position);
+      camera.position.copy(drone.root.position).add(trackingOffset);
+    }
+    controls.update();
+    cameraMode = mode;
     for (const other of document.querySelectorAll('[data-camera]')) {
       other.setAttribute('aria-pressed', String(other === button));
     }
   });
 }
 
-// chase eases in behind the drone but always looks straight at it (easing the look point too
-// makes the view swim on hard turns). Free keeps your orbit and just moves it along with the drone
-function moveCamera(previous, current, dt) {
-  if (cameraMode === 'chase') {
-    camera.position.lerp(chaseTarget(current), 1 - Math.exp(-dt * 3));
-    controls.target.copy(current);
-  } else {
+// tracking keeps your orbit and moves it along with the drone. Free doesn't move on its own
+function moveCamera(previous, current) {
+  if (cameraMode === 'tracking') {
     moved.subVectors(current, previous);
     camera.position.add(moved);
     controls.target.add(moved);
@@ -99,7 +120,7 @@ resize();
 
 // start with the camera already behind the drone
 showFlight(flight.step(0));
-camera.position.copy(chaseTarget(drone.root.position));
+camera.position.copy(drone.root.position).add(behindDrone());
 controls.target.copy(drone.root.position);
 controls.update();
 
@@ -113,7 +134,7 @@ function frame(time) {
   previous.copy(drone.root.position);
   showFlight(flight.step(dt));
   drone.spinProps(dt);
-  moveCamera(previous, drone.root.position, dt);
+  moveCamera(previous, drone.root.position);
   renderer.render(scene, camera);
 }
 // three.js stops calling the loop for good if it throws once, so log and keep going
