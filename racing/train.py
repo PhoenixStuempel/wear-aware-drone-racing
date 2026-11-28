@@ -2,6 +2,7 @@
 logging, evaluation and saving.
 
     python -m racing.train --name first --minutes 10
+    python -m racing.train --name tuned --minutes 30 --from runs/<run>/checkpoints/model_3100.pt
 
 Everything lands in runs/<date>_<name>/:
     config.json         every setting, the git commit, library versions, GPU
@@ -158,6 +159,7 @@ def main():
     ap.add_argument("--eval-every", type=int, default=50, help="updates between deterministic evals")
     ap.add_argument("--eval-envs", type=int, default=512)
     ap.add_argument("--save-every", type=int, default=100)
+    ap.add_argument("--from", dest="start_from", help="checkpoint to carry on training from")
     args = ap.parse_args()
 
     device = "cuda"
@@ -195,6 +197,17 @@ def main():
     normalizer = EmpiricalNormalization(shape=[obs.shape[1]], until=1.0e8).to(device)
     ppo = PPO(policy, device=device, **PPO_SETTINGS)
     ppo.init_storage("rl", env.num_envs, STEPS_PER_ENV, [obs.shape[1]], [obs.shape[1]], [env.num_actions])
+    it = 0
+    if args.start_from:
+        # carry on from a saved model: weights, observation normaliser, optimiser, update count
+        ckpt = torch.load(args.start_from, map_location=device, weights_only=False)
+        policy.load_state_dict(ckpt["policy"])
+        normalizer.load_state_dict(ckpt["normalizer"])
+        ppo.optimizer.load_state_dict(ckpt["optimizer"])
+        it = ckpt["iteration"]
+        config["started_from"] = {"checkpoint": args.start_from, "iteration": it}
+        (run / "config.json").write_text(json.dumps(config, indent=2))
+
     updates_log, eval_log = CsvLog(run / "updates.csv"), CsvLog(run / "eval.csv")
     episodes_log = CsvLog(run / "episodes.csv.gz", compress=True)
     print(f"run: {run}\nobs {obs.shape[1]}, envs {args.envs}, budget {args.minutes} min", flush=True)
@@ -213,7 +226,6 @@ def main():
 
     obs = normalizer(obs)
     start = time.time()
-    it = 0
     while time.time() - start < args.minutes * 60:
         t0 = time.time()
         # rollout
